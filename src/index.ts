@@ -12,7 +12,10 @@ import {
   MAX_MESSAGES_PER_PROMPT,
   ONECLI_URL,
   POLL_INTERVAL,
+  RECALL_API_KEY,
   TIMEZONE,
+  WEBHOOK_BASE_URL,
+  WEBHOOK_PORT,
 } from './config.js';
 import './channels/index.js';
 import {
@@ -60,8 +63,10 @@ import {
   loadSenderAllowlist,
   shouldDropMessage,
 } from './sender-allowlist.js';
+import { MeetService } from './services/meet-session.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
+import { createWebhookServer, startWebhookServer } from './webhook-server.js';
 import { logger } from './logger.js';
 
 // Re-export for backwards compatibility during refactor
@@ -560,9 +565,13 @@ async function main(): Promise<void> {
 
   restoreRemoteControl();
 
+  // Meet service — declared early so onMessage can reference it; initialized after channels connect
+  let meetService: MeetService | undefined;
+
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+    if (meetService) await meetService.cleanup().catch(() => {});
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
@@ -624,6 +633,26 @@ async function main(): Promise<void> {
         return;
       }
 
+      // Google Meet join command — intercept before storage
+      const meetMatch = trimmed.match(
+        /^join\s+(https:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3})/i,
+      );
+      if (meetMatch && meetService && registeredGroups[chatJid]) {
+        const meetingUrl = meetMatch[1];
+        meetService
+          .joinMeeting(meetingUrl, chatJid, registeredGroups[chatJid])
+          .then(() => {
+            const ch = findChannel(channels, chatJid);
+            if (ch) ch.sendMessage(chatJid, `Joining meeting: ${meetingUrl}`);
+          })
+          .catch((err: Error) => {
+            logger.error({ err, meetingUrl }, 'Failed to join meeting');
+            const ch = findChannel(channels, chatJid);
+            if (ch) ch.sendMessage(chatJid, `Failed to join meeting: ${err.message}`);
+          });
+        // Still store the message so it's in conversation history
+      }
+
       // Sender allowlist drop mode: discard messages from denied senders before storing
       if (!msg.is_from_me && !msg.is_bot_message && registeredGroups[chatJid]) {
         const cfg = loadSenderAllowlist();
@@ -668,9 +697,29 @@ async function main(): Promise<void> {
     channels.push(channel);
     await channel.connect();
   }
-  if (channels.length === 0) {
+  if (channels.length === 0 && !(RECALL_API_KEY && WEBHOOK_BASE_URL)) {
     logger.fatal('No channels connected');
     process.exit(1);
+  }
+  if (channels.length === 0) {
+    logger.warn('No chat channels connected — running with Meet integration only');
+  }
+
+  // Start Google Meet voice agent service (if configured)
+  if (RECALL_API_KEY && WEBHOOK_BASE_URL) {
+    meetService = new MeetService({
+      sendMessage: async (jid, text) => {
+        const ch = findChannel(channels, jid);
+        if (ch) await ch.sendMessage(jid, text);
+      },
+      runAgent,
+      getMainGroup: () =>
+        Object.values(registeredGroups).find((g) => g.isMain),
+      assistantName: ASSISTANT_NAME,
+    });
+    const webhookApp = createWebhookServer(meetService);
+    startWebhookServer(webhookApp, WEBHOOK_PORT);
+    logger.info('Google Meet integration enabled');
   }
 
   // Start subsystems (independently of connection handler)

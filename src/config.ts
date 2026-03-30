@@ -8,8 +8,14 @@ import { isValidTimezone } from './timezone.js';
 const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
+  'ANTHROPIC_BASE_URL',
   'ONECLI_URL',
   'TZ',
+  'RECALL_API_KEY',
+  'RECALL_REGION',
+  'GOOGLE_TTS_API_KEY',
+  'WEBHOOK_PORT',
+  'WEBHOOK_BASE_URL',
 ]);
 
 export const ASSISTANT_NAME =
@@ -95,3 +101,21 @@ function resolveConfigTimezone(): string {
   return 'UTC';
 }
 export const TIMEZONE = resolveConfigTimezone();
+
+// Anthropic API base URL (for LiteLLM proxy or custom endpoints)
+export const ANTHROPIC_BASE_URL =
+  process.env.ANTHROPIC_BASE_URL || envConfig.ANTHROPIC_BASE_URL || '';
+
+// Google Meet voice agent (via Recall.ai)
+export const RECALL_API_KEY =
+  process.env.RECALL_API_KEY || envConfig.RECALL_API_KEY || '';
+export const RECALL_REGION =
+  process.env.RECALL_REGION || envConfig.RECALL_REGION || 'us-east-1';
+export const GOOGLE_TTS_API_KEY =
+  process.env.GOOGLE_TTS_API_KEY || envConfig.GOOGLE_TTS_API_KEY || '';
+export const WEBHOOK_PORT = parseInt(
+  process.env.WEBHOOK_PORT || envConfig.WEBHOOK_PORT || '3100',
+  10,
+);
+export const WEBHOOK_BASE_URL =
+  process.env.WEBHOOK_BASE_URL || envConfig.WEBHOOK_BASE_URL || '';
